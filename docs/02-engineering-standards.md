@@ -201,6 +201,34 @@ what makes Doc 1 §A3 enforceable.
 **Rule E4.8 — Never send more snapshot than needed.** Scope to the relevant region and tell the
 user it was scoped (Doc 1 §B1.8).
 
+### E4.9 — The model's OWN tools are part of the trust boundary `[OURS]`
+
+**Learned the hard way, 1 Sep 2026.** The Q&A session was spawned via the Claude Code CLI without
+restricting tools, so it inherited the CLI's **full default toolset** — Bash, Read, Write, WebFetch.
+The panel was described to the user as "read-only, nothing here can modify your project" while the
+model had a working shell the whole time. It used it: `{"command":"echo \"scanning\""}`. Harmless in
+itself, but nothing prevented worse, and it was invisible until a tool-call fragment leaked into
+rendered text.
+
+**Rule E4.9.1 — Every model invocation declares its tools explicitly. No invocation inherits
+defaults.** For the Q&A session that means an empty allowlist *and* an explicit denylist:
+
+```
+--allowedTools ''
+--disallowedTools 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,Task,NotebookEdit'
+```
+
+The vision classifier is the one exception and gets `Read,Glob` scoped to a single `--add-dir`.
+
+**Rule E4.9.2 — "Read-only" must describe the whole system, not just our code.** A claim about what
+the plugin can do is false if the model reachable from it can do more. Audit the capability surface,
+not the call sites.
+
+**Rule E4.9.3 — Never render non-text deltas.** `partial_json` on a `content_block_delta` is
+tool-call *arguments*. Filter on `delta.type === 'text_delta'` and drop everything else, regardless
+of whether tools are supposed to be disabled — this is what surfaced the problem, and a renderer
+that shows only text cannot be tricked into displaying a tool call as prose.
+
 ---
 
 ## E5. Testing

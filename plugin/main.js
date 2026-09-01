@@ -18,8 +18,16 @@ const prompt = require('./agent/prompt');
 const indexer = require('./agent/indexer');
 const vision = require('./agent/vision');
 const labels = require('./agent/labels');
+const session = require('./agent/session');
 
 let win = null;
+let askCounter = 0;
+let lastFingerprint = null;
+
+/** Push an event to the renderer. No-op if the window is gone. */
+const emit = (channel, payload) => {
+  if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+};
 
 function createWindow() {
   win = new BrowserWindow({
@@ -45,6 +53,9 @@ app.on('activate', () => {
 });
 
 app.on('window-all-closed', () => {
+  // Kill the long-lived CLI child, or it outlives the plugin window.
+  try { session.stop('app-quit'); } catch (_) {}
+
   // ------------------------------------------------------------------
   // Doc 2 E0 #2 — DO NOT call WorkflowIntegration.CleanUp().
   // BMD's README says to call it on quit. One project reports it blocks the
@@ -126,27 +137,117 @@ ipcMain.handle('agent:ask', async (_e, question) => {
   const ctx = context.build(snap);
   if (!ctx.ok) return { ok: false, error: ctx.error, layer: 'plugin' };
 
-  const r = await backend.ask({
+  // Reuse the live session when the timeline hasn't moved. Measured: sending
+  // 23k of context costs ~5s of time-to-first-token and a full cache WRITE
+  // every time, because each spawn is a new session. Same context in an
+  // existing session is a cache READ.
+  const fp = snapshot.fingerprint(snap);
+  const contextChanged = fp !== lastFingerprint;
+  lastFingerprint = fp;
+
+  const askId = ++askCounter;
+  emit('agent:delta', { askId, phase: 'start' });
+
+  const r = await session.ask({
     system: prompt.build(),
     context: ctx.text,
+    contextKey: fp,
+    contextChanged,
     question,
+    onDelta: (piece) => emit('agent:delta', { askId, text: piece }),
+  });
+
+  // A dead or wedged session shouldn't cost the user their question — fall
+  // back to a one-shot spawn, which is slower but independent.
+  if (!r.ok && /session|write|spawn/i.test(r.error || '')) {
+    const fb = await backend.askStream({
+      system: prompt.build(),
+      context: ctx.text,
+      question,
+      onDelta: (piece) => emit('agent:delta', { askId, text: piece }),
+    });
+    return decorate(fb, { fellBack: true, sentContext: true });
+  }
+
+  return decorate(r, { fellBack: false, sentContext: contextChanged });
+
+  function decorate(res, extra) {
+    return {
+      ...res,
+      askId,
+      layer: res.ok ? undefined : 'model',
+      diag: {
+        snapshotMs: snapMs,
+        snapshotVersion: snap.version,
+        contextChars: ctx.chars,
+        clipsIncluded: ctx.clipsIncluded,
+        clipsTotal: ctx.clipsTotal,
+        scoped: ctx.scoped,
+        promptVersion: prompt.PROMPT_VERSION,
+        apiCalls: snap.timings.calls.count,
+        firstTokenMs: res.firstTokenMs,
+        sentContext: extra.sentContext,
+        fellBack: extra.fellBack,
+        sessionTurns: session.state().turns,
+        cacheCreation: res.meta && res.meta.cacheCreation,
+        cacheRead: res.meta && res.meta.cacheRead,
+      },
+    };
+  }
+});
+
+/**
+ * Prime the session before the user asks anything.
+ *
+ * Measured: the first question pays ~18s of time-to-first-token because the
+ * context is a cold cache write; the second costs ~1.7s. Nothing about that is
+ * specific to the user's question, so we can pay it up front while they are
+ * still reading the panel.
+ *
+ * Deliberately asks a trivial question — the answer is discarded, the point is
+ * the warm cache.
+ */
+ipcMain.handle('agent:prewarm', async () => {
+  if (session.state().busy) return { ok: false, error: 'busy' };
+  const t0 = Date.now();
+
+  const snap = snapshot.take();
+  if (!snap.ok) return { ok: false, error: snap.error };
+
+  const ctx = context.build(snap);
+  if (!ctx.ok) return { ok: false, error: ctx.error };
+
+  const fp = snapshot.fingerprint(snap);
+  lastFingerprint = fp;
+
+  const r = await session.ask({
+    system: prompt.build(),
+    context: ctx.text,
+    contextKey: fp,
+    contextChanged: true,
+    question:
+      'Reply with exactly: READY. Do not describe the timeline, do not list anything.',
+    onDelta: () => {},
   });
 
   return {
-    ...r,
-    layer: r.ok ? undefined : 'model',
-    diag: {
-      snapshotMs: snapMs,
-      snapshotVersion: snap.version,
-      contextChars: ctx.chars,
-      clipsIncluded: ctx.clipsIncluded,
-      clipsTotal: ctx.clipsTotal,
-      scoped: ctx.scoped,
-      promptVersion: prompt.PROMPT_VERSION,
-      apiCalls: snap.timings.calls.count,
-    },
+    ok: r.ok,
+    error: r.error,
+    ms: Date.now() - t0,
+    firstTokenMs: r.firstTokenMs,
+    contextChars: ctx.chars,
+    clips: ctx.clipsTotal,
+    labelled: snap.contentLabelCount || 0,
   };
 });
+
+ipcMain.handle('agent:resetSession', async () => {
+  session.stop('user-reset');
+  lastFingerprint = null;
+  return { ok: true };
+});
+
+ipcMain.handle('agent:sessionState', async () => session.state());
 
 // ---------------------------------------------------------------- E6 index
 // Content understanding. The capture pass mutates UI state (page + playhead)
@@ -154,10 +255,6 @@ ipcMain.handle('agent:ask', async (_e, question) => {
 // explicit dry-run -> review -> apply flow.
 
 let indexState = { running: false, cancel: false, last: null };
-
-const emit = (channel, payload) => {
-  if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
-};
 
 ipcMain.handle('index:cancel', async () => {
   indexState.cancel = true;

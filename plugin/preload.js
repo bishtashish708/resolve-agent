@@ -17,6 +17,11 @@ contextBridge.exposeInMainWorld('agent', {
   probe: () => ipcRenderer.invoke('resolve:probe'),
   agentStatus: () => ipcRenderer.invoke('agent:status'),
   ask: (question) => ipcRenderer.invoke('agent:ask', question),
+  onDelta: (cb) => {
+    const h = (_e, p) => cb(p);
+    ipcRenderer.on('agent:delta', h);
+    return () => ipcRenderer.removeListener('agent:delta', h);
+  },
 
   // E6 — content indexing
   indexRun: (opts) => ipcRenderer.invoke('index:run', opts),
@@ -29,6 +34,9 @@ contextBridge.exposeInMainWorld('agent', {
     ipcRenderer.on('index:progress', h);
     return () => ipcRenderer.removeListener('index:progress', h);
   },
+  prewarm: () => ipcRenderer.invoke('agent:prewarm'),
+  resetSession: () => ipcRenderer.invoke('agent:resetSession'),
+  sessionState: () => ipcRenderer.invoke('agent:sessionState'),
   callLog: () => ipcRenderer.invoke('diag:callLog'),
   env: () => ipcRenderer.invoke('diag:env'),
   openDevTools: () => ipcRenderer.invoke('diag:openDevTools'),

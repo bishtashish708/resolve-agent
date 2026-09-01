@@ -121,6 +121,8 @@
     <button id="btnEnv">Environment</button>
     <button id="btnFails">Failed calls</button>
     <button id="btnCtx" disabled>Show context</button>
+    <button id="btnSession">Session</button>
+    <button id="btnReset">Reset session</button>
     <button id="btnDev">DevTools</button>
   </div>
   <div id="out"></div>
@@ -143,6 +145,22 @@ function msg(cls, who, bodyHtml, metaHtml) {
   return d;
 }
 
+// Streaming: total time is unchanged (~20s for a long list — it's generation
+// bound), but the first token lands in ~2s, so there is no dead air.
+let activeAsk = null;
+window.agent.onDelta((p) => {
+  if (!activeAsk || p.askId !== activeAsk.id) return;
+  if (p.phase === 'start') {
+    activeAsk.body.textContent = '';
+    activeAsk.body.classList.remove('thinking');
+    return;
+  }
+  if (p.text) {
+    activeAsk.body.textContent += p.text;
+    activeAsk.el.scrollIntoView({ block: 'end' });
+  }
+});
+
 async function ask() {
   const q = $('q').value.trim();
   if (!q) return;
@@ -150,14 +168,24 @@ async function ask() {
   $('btnAsk').disabled = true;
   msg('user', 'you', esc(q));
   const pending = msg('agent', 'agent', '<span class="thinking">reading timeline…</span>');
+  const body = pending.querySelector('.body');
 
   const t0 = performance.now();
+  // askId is assigned server-side; the first delta carries it, so we accept
+  // whichever id arrives while this request is outstanding.
+  activeAsk = { id: null, el: pending, body };
+  const unhook = window.agent.onDelta((p) => {
+    if (activeAsk && activeAsk.id === null) activeAsk.id = p.askId;
+  });
+
   const r = await window.agent.ask(q);
   const wall = Math.round(performance.now() - t0);
+  unhook();
+  activeAsk = null;
 
   if (!r.ok) {
     pending.className = 'msg err';
-    pending.querySelector('.body').textContent =
+    body.textContent =
       `[${r.layer || 'unknown'} error] ${r.error}` +
       (r.hint ? `\n\n${r.hint}` : '') +
       (r.stderr ? `\n\n${r.stderr}` : '');
@@ -166,14 +194,20 @@ async function ask() {
   }
 
   const d = r.diag || {};
-  pending.querySelector('.body').textContent = r.text;
+  // Deltas may have missed pieces (older CLI, parse gaps) — the final text is
+  // authoritative, so reconcile rather than trusting the stream.
+  if (r.text && body.textContent !== r.text) body.textContent = r.text;
+
   const meta = document.createElement('div');
   meta.className = 'meta';
   meta.textContent =
-    `${wall}ms total · snapshot ${d.snapshotMs}ms (v${d.snapshotVersion}, ` +
-    `${d.apiCalls} calls) · model ${r.ms}ms · ctx ${d.contextChars} chars / ` +
-    `${d.clipsIncluded}of${d.clipsTotal} clips${d.scoped ? ' (SCOPED)' : ''} · ` +
-    `prompt v${d.promptVersion}`;
+    `${wall}ms · first token ${d.firstTokenMs != null ? d.firstTokenMs + 'ms' : 'n/a'} · ` +
+    `snapshot ${d.snapshotMs}ms · model ${r.ms}ms · ` +
+    `ctx ${d.sentContext ? 'SENT ' + d.contextChars + ' chars' : 'reused (cached)'} · ` +
+    `turn ${d.sessionTurns}` +
+    (d.cacheRead != null ? ` · cache r${d.cacheRead}/w${d.cacheCreation}` : '') +
+    (d.fellBack ? ' · FELL BACK to one-shot' : '') +
+    ` · prompt v${d.promptVersion}`;
   pending.appendChild(meta);
   $('btnAsk').disabled = false;
   $('q').focus();
@@ -298,6 +332,23 @@ $('btnFails').onclick = async () => {
        <div class="k">total logged ${r.stats.count} · failures ${r.stats.failures}</div>`
     : `<div class="ok">no failures in the last ${r.recent.length} logged calls</div>
        <div class="k">(log is capped — take a fresh Snapshot first, then click this)</div>`);
+};
+
+$('btnSession').onclick = async () => {
+  const s = await window.agent.sessionState();
+  card('CLI session', kv([
+    ['running', s.running, s.running ? 'ok' : 'warn'],
+    ['busy', s.busy],
+    ['turns', s.turns],
+    ['context sent', s.contextSent],
+    ['session key', s.sessionKey ? String(s.sessionKey).slice(0, 60) + '…' : '(none)'],
+    ['stderr', s.stderr || '(none)'],
+  ]));
+};
+
+$('btnReset').onclick = async () => {
+  await window.agent.resetSession();
+  card('Session reset', '<div class="k">next question will start a fresh CLI process and re-send context</div>');
 };
 
 $('btnDev').onclick = () => window.agent.openDevTools();
@@ -444,13 +495,24 @@ $('btnIdxRevert').onclick = async () => {
     return;
   }
   $('btnAsk').disabled = false;
-  setStatus(`<span class="ok">Ready</span> — Resolve ${esc(c.resolveVersion)} · CLI ok`);
   card('Backend', kv([
     ['resolve', c.resolveVersion],
     ['cli path', a.path],
     ['plugin PATH', a.pluginPath, 'warn'],
   ]));
   $('q').focus();
+
+  // Pay the cold-start cost now, while the user is still reading the panel.
+  // First question costs ~18s to first token on a cold cache, ~1.7s on a warm
+  // one — and none of that work depends on what they actually ask.
+  setStatus(`<span class="ok">Ready</span> — Resolve ${esc(c.resolveVersion)} · ` +
+            `<span class="k">warming up…</span>`);
+  const w = await window.agent.prewarm();
+  setStatus(w.ok
+    ? `<span class="ok">Ready</span> — Resolve ${esc(c.resolveVersion)} · ` +
+      `${w.clips} clips, ${w.labelled} labelled · warm (${(w.ms/1000).toFixed(1)}s)`
+    : `<span class="ok">Ready</span> — Resolve ${esc(c.resolveVersion)} · ` +
+      `<span class="warn">not warmed (${esc(w.error || '?')}) — first question will be slow</span>`);
 })();
 </script>
 </body>

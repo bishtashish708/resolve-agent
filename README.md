@@ -160,6 +160,20 @@ Measured on Resolve Studio 21.0.3.7, macOS. Details in [`docs/findings/`](docs/f
   Console testing hides this — round-trip overhead supplies the delay by accident.
 - **`os.tmpdir()` is not `/tmp` on macOS** — it is a per-user path under `/var/folders/…/T/`.
 
+### If you are driving the Claude Code CLI from an app
+
+- **The CLI inherits its full toolset unless you stop it.** A session spawned without
+  `--allowedTools` gets Bash, Read, Write and WebFetch. Ours used Bash mid-answer while the UI
+  claimed to be read-only. Declare tools explicitly on **every** invocation; never inherit defaults.
+- **Never render `partial_json` deltas as text** — those are tool-call *arguments*. Filter on
+  `delta.type === 'text_delta'`. A tool call leaking into rendered prose is how we found the above.
+- **One process per question re-pays your whole context.** Each spawn is a new session, so the
+  context is a cache *write* every time (~5 s of time-to-first-token). A long-lived process that
+  re-sends context only when your data actually changed took first-token from **17.9 s to 1.7 s**.
+- **Don't benchmark two things at once.** We concluded "context size doesn't affect latency" from
+  two runs with different questions *and* different answer lengths. A controlled test showed the
+  opposite.
+
 ## Contributing
 
 If you have verified behaviour that contradicts anything here, that's the most valuable

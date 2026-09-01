@@ -214,4 +214,45 @@ function computeDerived(snap) {
   };
 }
 
-module.exports = { take };
+/**
+ * Structural fingerprint of a snapshot. (Doc 1 §B1.7)
+ *
+ * Used to decide whether a live model session still has an accurate picture of
+ * the timeline. If this is unchanged, the session can be reused and the context
+ * becomes a cache read instead of a cache write (~5s and real cost per question).
+ *
+ * DELIBERATELY EXCLUDES the playhead: moving the playhead does not change the
+ * timeline, and treating it as drift would defeat the whole optimisation.
+ * INCLUDES content labels, because a label written between questions genuinely
+ * changes what the model can answer.
+ */
+function fingerprint(snap) {
+  if (!snap || !snap.ok) return 'invalid';
+
+  const parts = [
+    snap.project.name,
+    snap.timeline.uniqueId,
+    snap.timeline.name,
+    snap.timeline.startFrame,
+    snap.timeline.endFrame,
+    snap.tracks.length,
+    snap.clips.length,
+    snap.markers.length,
+    snap.contentLabelCount || 0,
+  ];
+
+  // Clip identity + position. Cheap rolling hash — we need change detection,
+  // not cryptographic strength.
+  let h = 5381;
+  const mix = (s) => {
+    const str = String(s);
+    for (let i = 0; i < str.length; i++) h = ((h * 33) ^ str.charCodeAt(i)) >>> 0;
+  };
+  for (const c of snap.clips) { mix(c.id); mix(c.start); mix(c.end); mix(c.trackIndex); }
+  for (const t of snap.tracks) { mix(t.type); mix(t.index); mix(t.locked); mix(t.enabled); }
+  for (const m of snap.markers) { mix(m.frame); mix(m.name); }
+
+  return `${parts.join('|')}#${h.toString(36)}`;
+}
+
+module.exports = { take, fingerprint };

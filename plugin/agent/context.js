@@ -115,23 +115,58 @@ function build(snap, { focusFrame = null, windowFrames = null } = {}) {
   const labels = snap.contentLabels || {};
   const haveLabels = Object.keys(labels).length > 0;
 
-  L.push('## CLIPS');
-  L.push(
-    '# track | start TC | end TC | frames | name | handle L/R | id' +
-      (haveLabels ? ' | content (APPROXIMATE)' : '')
-  );
-  for (const c of clips) {
+  // Audio clips cannot carry a VISUAL label, so listing them with a blank
+  // content column made the model treat them as "unlabelled and might match" —
+  // it reported 185 possible unlabelled matches when the true figure was ~4.
+  // Video and audio are now listed separately and the denominators are stated.
+  const videoClips = clips.filter((c) => c.trackType === 'video');
+  const audioClips = clips.filter((c) => c.trackType !== 'video');
+  const labelledVideo = videoClips.filter((c) => labels[c.id]).length;
+  const unlabelledVideo = videoClips.length - labelledVideo;
+
+  // The handle column is deliberately omitted: the prompt forbids reasoning
+  // about handle length until the semantics of leftOffset/rightOffset are
+  // verified, so shipping it is pure context cost.
+  const rowFor = (c, withContent) => {
     const row = [
       `${c.trackType[0].toUpperCase()}${c.trackIndex}`,
       framesToTC(c.start, fps),
       framesToTC(c.end, fps),
       `${c.duration}f`,
       c.name,
-      `${c.leftOffset ?? '?'}/${c.rightOffset ?? '?'}`,
-      (c.id || '').slice(0, 8),
     ];
-    if (haveLabels) row.push(labels[c.id] || '—');
-    L.push(row.join(' | '));
+    if (withContent) row.push(labels[c.id] || 'NOT LABELLED');
+    return row.join(' | ');
+  };
+
+  L.push(`## VIDEO CLIPS (${videoClips.length})`);
+  L.push('# track | start TC | end TC | frames | name' + (haveLabels ? ' | content (APPROXIMATE)' : ''));
+  for (const c of videoClips) L.push(rowFor(c, haveLabels));
+  L.push('');
+
+  // Audio that sits exactly under a video clip of the same name is the camera's
+  // own sync audio — listing all of it doubles the context for no information.
+  // Only independent audio (music, SFX, anything unpaired) is worth enumerating.
+  if (audioClips.length) {
+    const videoKey = new Set(videoClips.map((c) => `${c.name}@${c.start}`));
+    const paired = audioClips.filter((c) => videoKey.has(`${c.name}@${c.start}`));
+    const independent = audioClips.filter((c) => !videoKey.has(`${c.name}@${c.start}`));
+
+    L.push(`## AUDIO CLIPS (${audioClips.length})`);
+    L.push('# Audio clips carry NO visual content label. Never count them as unlabelled footage.');
+    if (paired.length) {
+      L.push(`${paired.length} are camera sync audio sitting exactly under the video clip of the ` +
+             `same name — not listed individually. Assume every video clip above has its sync audio ` +
+             `unless told otherwise.`);
+    }
+    if (independent.length) {
+      L.push(`${independent.length} independent audio clip(s) (music, SFX, or unpaired):`);
+      L.push('# track | start TC | end TC | frames | name');
+      for (const c of independent) L.push(rowFor(c, false));
+    } else {
+      L.push('No independent audio — no music or SFX on this timeline yet.');
+    }
+    L.push('');
   }
   if (scoped) {
     L.push('');
@@ -142,14 +177,20 @@ function build(snap, { focusFrame = null, windowFrames = null } = {}) {
   // ---- how to treat content labels
   if (haveLabels) {
     L.push('## ABOUT THE CONTENT COLUMN');
-    L.push(`${Object.keys(labels).length} of ${snap.clips.length} clips have a content label.`);
-    L.push('These come from a vision model looking at ONE sampled frame per clip.');
+    L.push(`${labelledVideo} of ${videoClips.length} VIDEO clips are labelled. ` +
+           `${unlabelledVideo} video clip(s) are NOT LABELLED.`);
+    L.push(`The ${audioClips.length} audio clips are listed separately and are NOT part of this ` +
+           `count — they never carry visual labels. Do not describe them as unlabelled footage.`);
+    L.push('Labels come from a vision model looking at ONE sampled frame per clip.');
     L.push('They are APPROXIMATE and are a different kind of fact from timecodes:');
     L.push('- Treat them as a searchable index, not as ground truth.');
     L.push('- Say "labelled as" or "looks like", not "is".');
     L.push('- A label marked "(low confidence)" should be offered with a caveat.');
     L.push('- One frame cannot represent a whole clip; content may change within it.');
-    L.push('- Clips marked "—" were not labelled. Never assume they lack that content.');
+    L.push(`- When noting what might be missed, the honest number is ${unlabelledVideo}, ` +
+           `not the total clip count.`);
+    L.push('- Labels attach to the SOURCE FILE, not to a timeline instance. A clip used more');
+    L.push('  than once carries a single label describing only one of those instances.');
     L.push('');
   }
 
