@@ -1,0 +1,8 @@
+{
+  "name": "resolve-agent",
+  "version": "0.1.0",
+  "description": "Timeline-aware assistant for DaVinci Resolve Studio",
+  "main": "main.js",
+  "private": true,
+  "license": "MIT"
+}

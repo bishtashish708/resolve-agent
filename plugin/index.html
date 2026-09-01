@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+<title>Resolve Agent</title>
+<style>
+  :root {
+    --bg: #1b1d21; --panel: #24272c; --line: #34383f;
+    --fg: #e6e8ea; --dim: #8d949e; --ok: #4ade80; --bad: #f87171; --warn: #fbbf24;
+    --accent: #7dd3fc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 13px/1.5 -apple-system, "SF Pro Text", system-ui, sans-serif;
+    padding: 14px; -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: 14px; margin: 0 0 2px; letter-spacing: .2px; }
+  .sub { color: var(--dim); font-size: 11px; margin-bottom: 14px; }
+  .row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  button {
+    background: var(--panel); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 7px 12px; font-size: 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 11px 13px; margin-bottom: 10px;
+  }
+  .card h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .7px;
+    color: var(--dim); margin: 0 0 8px; font-weight: 600;
+  }
+  .kv { display: grid; grid-template-columns: 130px 1fr; gap: 3px 10px; font-size: 12px; }
+  .kv .k { color: var(--dim); }
+  .kv .v { font-variant-numeric: tabular-nums; word-break: break-word; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  .big { font-size: 22px; font-variant-numeric: tabular-nums; }
+  pre {
+    background: #15171a; border: 1px solid var(--line); border-radius: 6px;
+    padding: 9px; font-size: 11px; max-height: 260px; overflow: auto;
+    font-family: "SF Mono", Menlo, monospace; margin: 0; white-space: pre-wrap;
+  }
+  .tag {
+    display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 4px;
+    background: #2f343b; color: var(--dim); margin: 0 4px 4px 0;
+  }
+  .status { font-size: 12px; margin-bottom: 10px; }
+
+  /* --- chat --- */
+  .chat { margin-bottom: 10px; }
+  .msg { margin-bottom: 12px; }
+  .msg .who {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .7px;
+    color: var(--dim); margin-bottom: 3px;
+  }
+  .msg.user .body {
+    background: #2b3138; border-radius: 8px; padding: 7px 10px; white-space: pre-wrap;
+  }
+  .msg.agent .body { white-space: pre-wrap; }
+  .msg.err .body { color: var(--bad); white-space: pre-wrap; }
+  .meta { font-size: 10px; color: #6b727c; margin-top: 5px; font-variant-numeric: tabular-nums; }
+  .thinking { color: var(--dim); font-style: italic; }
+
+  .composer { display: flex; gap: 7px; align-items: flex-end; margin-bottom: 12px; }
+  textarea {
+    flex: 1; background: var(--panel); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 8px 10px; font: inherit; resize: vertical; min-height: 40px;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+
+  details.diag { border-top: 1px solid var(--line); padding-top: 8px; }
+  details.diag summary {
+    cursor: pointer; font-size: 11px; color: var(--dim);
+    text-transform: uppercase; letter-spacing: .7px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Resolve Agent <span class="tag">v0.2 · read-only</span></h1>
+<div class="sub">E4 — ask about your timeline. Nothing here can modify your project.</div>
+
+<div class="status" id="status">Connecting…</div>
+
+<div class="chat" id="chat"></div>
+
+<div class="composer">
+  <textarea id="q" rows="2" placeholder="Ask about your timeline…  (⌘↵ to send)"></textarea>
+  <button id="btnAsk" disabled>Ask</button>
+</div>
+
+<details class="diag">
+  <summary>Diagnostics</summary>
+  <div class="row" style="margin-top:8px">
+    <button id="btnConnect">Reconnect</button>
+    <button id="btnSnap" disabled>Snapshot</button>
+    <button id="btnProbe" disabled>Probe API</button>
+    <button id="btnEnv">Environment</button>
+    <button id="btnFails">Failed calls</button>
+    <button id="btnCtx" disabled>Show context</button>
+    <button id="btnDev">DevTools</button>
+  </div>
+  <div id="out"></div>
+</details>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const out = $('out');
+const chat = $('chat');
+const esc = (s) => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// ------------------------------------------------------------------ chat
+function msg(cls, who, bodyHtml, metaHtml) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + cls;
+  d.innerHTML = `<div class="who">${esc(who)}</div><div class="body">${bodyHtml}</div>` +
+                (metaHtml ? `<div class="meta">${metaHtml}</div>` : '');
+  chat.appendChild(d);
+  d.scrollIntoView({ block: 'end' });
+  return d;
+}
+
+async function ask() {
+  const q = $('q').value.trim();
+  if (!q) return;
+  $('q').value = '';
+  $('btnAsk').disabled = true;
+  msg('user', 'you', esc(q));
+  const pending = msg('agent', 'agent', '<span class="thinking">reading timeline…</span>');
+
+  const t0 = performance.now();
+  const r = await window.agent.ask(q);
+  const wall = Math.round(performance.now() - t0);
+
+  if (!r.ok) {
+    pending.className = 'msg err';
+    pending.querySelector('.body').textContent =
+      `[${r.layer || 'unknown'} error] ${r.error}` +
+      (r.hint ? `\n\n${r.hint}` : '') +
+      (r.stderr ? `\n\n${r.stderr}` : '');
+    $('btnAsk').disabled = false;
+    return;
+  }
+
+  const d = r.diag || {};
+  pending.querySelector('.body').textContent = r.text;
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  meta.textContent =
+    `${wall}ms total · snapshot ${d.snapshotMs}ms (v${d.snapshotVersion}, ` +
+    `${d.apiCalls} calls) · model ${r.ms}ms · ctx ${d.contextChars} chars / ` +
+    `${d.clipsIncluded}of${d.clipsTotal} clips${d.scoped ? ' (SCOPED)' : ''} · ` +
+    `prompt v${d.promptVersion}`;
+  pending.appendChild(meta);
+  $('btnAsk').disabled = false;
+  $('q').focus();
+}
+
+$('btnAsk').onclick = ask;
+$('q').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); ask(); }
+});
+
+function setStatus(html) { $('status').innerHTML = html; }
+function card(title, bodyHtml) {
+  const d = document.createElement('div');
+  d.className = 'card';
+  d.innerHTML = `<h2>${esc(title)}</h2>${bodyHtml}`;
+  out.prepend(d);
+}
+function kv(pairs) {
+  return '<div class="kv">' + pairs.map(([k, v, cls]) =>
+    `<div class="k">${esc(k)}</div><div class="v ${cls || ''}">${esc(v)}</div>`).join('') + '</div>';
+}
+
+$('btnConnect').onclick = async () => {
+  setStatus('Connecting…');
+  const r = await window.agent.connect();
+  if (!r.ok) {
+    setStatus(`<span class="bad">FAILED at ${esc(r.stage || '?')}</span>`);
+    card('Connect failed', kv([['stage', r.stage || '?'], ['error', r.error || '?', 'bad']]));
+    return;
+  }
+  setStatus(`<span class="ok">Connected</span> — ${esc(r.productName)} ${esc(r.resolveVersion)}`);
+  $('btnSnap').disabled = false;
+  $('btnProbe').disabled = false;
+  card('Connected', kv([
+    ['product', r.productName],
+    ['version', r.resolveVersion],
+    ['plugin id', r.pluginId],
+    ['api timeout', r.apiTimeoutSecs + 's'],
+    ['module info', JSON.stringify(r.moduleInfo)],
+  ]));
+};
+
+$('btnSnap').onclick = async () => {
+  setStatus('Reading timeline…');
+  const t0 = performance.now();
+  const s = await window.agent.snapshot();
+  const wall = Math.round(performance.now() - t0);
+  if (!s.ok) {
+    setStatus(`<span class="bad">Snapshot failed</span>`);
+    card('Snapshot failed', kv([['error', s.error, 'bad']]));
+    return;
+  }
+  const d = s.derived, t = s.timings;
+  setStatus(`<span class="ok">Snapshot v${s.version}</span> — ${d.clipCount} clips in ${wall}ms`);
+  card(`Snapshot v${s.version}`, `
+    <div class="big">${t.totalMs} ms <span style="font-size:12px;color:var(--dim)">
+      (${wall}ms incl. IPC)</span></div>
+    <div style="height:8px"></div>
+    ${kv([
+      ['project', s.project.name],
+      ['timeline', s.timeline.name],
+      ['page', s.project.page],
+      ['fps', s.timeline.fps],
+      ['range', `${s.timeline.startFrame} → ${s.timeline.endFrame} (${d.timelineFrames} frames)`],
+      ['playhead TC', s.timeline.currentTimecode === null
+        ? 'null — page-dependent' : s.timeline.currentTimecode,
+        s.timeline.currentTimecode === null ? 'warn' : ''],
+      ['tracks', d.trackCount],
+      ['clips', `${d.clipCount}  (video ${d.videoClipCount} / audio ${d.audioClipCount})`],
+      ['cut points', d.cutPointCount],
+      ['gaps', d.gapCount],
+      ['markers', s.markers.length],
+      ['clip len med/min/max', `${d.medianClipFrames} / ${d.shortestClipFrames} / ${d.longestClipFrames}`],
+      ['locked tracks', d.lockedTracks.length ? d.lockedTracks.join(', ') : 'none'],
+      ['API calls', `${t.calls.count} · avg ${t.calls.avgMs}ms · ${t.calls.failures} failed`,
+        t.calls.failures ? 'warn' : 'ok'],
+      ['breakdown', `tracks ${t.tracksMs}ms · clips ${t.clipsMs}ms · markers ${t.markersMs}ms`],
+    ])}
+    <div style="height:8px"></div>
+    <pre>${esc(JSON.stringify(s.clips.slice(0, 3), null, 1))}</pre>
+  `);
+};
+
+$('btnProbe').onclick = async () => {
+  const r = await window.agent.probe();
+  if (!r.ok) { card('Probe failed', kv([['error', r.error, 'bad']])); return; }
+  const c = r.capabilities;
+  const block = (o) => !o.present
+    ? `<div class="bad">absent</div>`
+    : `<div class="k" style="margin-bottom:4px">${o.methodCount ?? o.methods.length} methods</div>
+       <pre>${esc(o.methods.join('\n'))}</pre>`;
+  card('API surface (introspected)', Object.keys(c).map(k =>
+    `<div style="margin-bottom:9px"><div class="k">${esc(c[k].label)}</div>${block(c[k])}</div>`
+  ).join(''));
+};
+
+$('btnEnv').onclick = async () => {
+  const e = await window.agent.env();
+  card('Environment', kv([
+    ['electron', e.electron],
+    ['node', e.node],
+    ['chrome', e.chrome],
+    ['ABI (modules)', e.modules, e.modules === '135' ? 'ok' : 'warn'],
+    ['platform', e.platform + ' / ' + e.arch],
+    ['execPath', e.execPath],
+    ['cwd', e.cwd],
+    ['PATH', e.path],
+  ]));
+};
+
+$('btnFails').onclick = async () => {
+  const r = await window.agent.callLog();
+  const fails = r.recent.filter(e => !e.ok);
+  const counts = {};
+  for (const f of fails) {
+    const k = `${f.method} :: ${f.error || 'falsy return'} :: ${f.type}`;
+    counts[k] = (counts[k] || 0) + 1;
+  }
+  const rows = Object.keys(counts).map(k => [k, counts[k] + '×']);
+  card('Failed calls', rows.length
+    ? kv(rows) + `<div style="height:6px"></div>
+       <div class="k">total logged ${r.stats.count} · failures ${r.stats.failures}</div>`
+    : `<div class="ok">no failures in the last ${r.recent.length} logged calls</div>
+       <div class="k">(log is capped — take a fresh Snapshot first, then click this)</div>`);
+};
+
+$('btnDev').onclick = () => window.agent.openDevTools();
+
+// --------------------------------------------------------------- startup
+(async () => {
+  const c = await window.agent.connect();
+  if (!c.ok) {
+    setStatus(`<span class="bad">Resolve: FAILED at ${esc(c.stage || '?')}</span> — ${esc(c.error)}`);
+    return;
+  }
+  $('btnSnap').disabled = false;
+  $('btnProbe').disabled = false;
+
+  const a = await window.agent.agentStatus();
+  if (!a.ok) {
+    setStatus(`<span class="ok">Resolve ${esc(c.resolveVersion)}</span> · ` +
+              `<span class="bad">Claude CLI not found</span>`);
+    card('Claude CLI missing', kv([
+      ['error', a.error, 'bad'],
+      ['searched', (a.searched || []).join('\n')],
+      ['hint', a.hint || ''],
+    ]));
+    return;
+  }
+  $('btnAsk').disabled = false;
+  setStatus(`<span class="ok">Ready</span> — Resolve ${esc(c.resolveVersion)} · CLI ok`);
+  card('Backend', kv([
+    ['resolve', c.resolveVersion],
+    ['cli path', a.path],
+    ['plugin PATH', a.pluginPath, 'warn'],
+  ]));
+  $('q').focus();
+})();
+</script>
+</body>
+</html>

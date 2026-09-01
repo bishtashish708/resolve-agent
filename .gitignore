@@ -1,0 +1,15 @@
+# never commit the Blackmagic native bridge — it ships with Resolve Studio and
+# redistributing it is not ours to do. install.sh copies it from your install.
+WorkflowIntegration.node
+WorkflowIntegration.*.node
+
+node_modules/
+.DS_Store
+*.log
+logs/
+
+# local scratch
+.env
+.env.*
+*.local
+scratch/
