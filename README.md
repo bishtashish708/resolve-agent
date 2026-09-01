@@ -28,13 +28,25 @@ at 00:01:44:16"* is useful. One that claims it added the dissolve is worse than 
 - Loads inside Resolve Studio and reaches the scripting API from JavaScript
 - Reads a full structural snapshot of the current timeline — **~700 ms for 362 clips**
 - Answers questions about the timeline from a fresh snapshot every time
-- Refuses correctly: won't claim impossible operations, won't invent footage content
+- **Content indexing** — steps the Color page through each clip, grabs a frame, labels it with a
+  vision model, and writes the label to the clip's `Comments` field so it is visible and
+  correctable in the Media Pool. Nothing is written without explicit approval, and it is reversible.
+- Refuses correctly: won't claim impossible operations, and treats content labels as approximate
+  while keeping timecodes exact
 - Diagnostics: per-call timing, failure tracking, API surface introspection
+
+Content labels look like this, written to `Comments`:
+
+```
+C1163.MP4  01:00:00:00  [agent] hikers on forest trail · forest · wide · midday
+C1174.MP4  01:00:20:05  [agent] backpacker on granite slab · rock · medium · overcast
+                                — trekking pole, storm clouds
+```
 
 ## What doesn't yet
 
-Mutations, content understanding (it cannot see your footage), streaming responses, and everything
-in [`docs/03-epics.md`](docs/03-epics.md) past E4.
+Timeline mutations, audio-based classification, streaming responses, and everything in
+[`docs/03-epics.md`](docs/03-epics.md) past E6.
 
 ---
 
@@ -138,9 +150,15 @@ Measured on Resolve Studio 21.0.3.7, macOS. Details in [`docs/findings/`](docs/f
   Use `Examples/SamplePlugin/` — Blackmagic's README says so explicitly.
 - **A plugin's `PATH` is `/usr/bin:/bin:/usr/sbin:/sbin`.** No `/usr/local/bin`, no Homebrew, no
   `~/.local/bin`. Subprocesses must be resolved by absolute path.
-- **`SetMetadata("Comments", …)` works; `Keyword` is reserved and fails.**
+- **`SetMetadata("Comments", …)` works; `Keyword` is reserved and fails.** `SetClipProperty` only
+  accepts a small settable subset — it is not the same thing as `SetMetadata`.
 - **The modal-dialog API hang was real and was fixed in Resolve 20.1** — per Blackmagic's own
   CHANGELOG, which is more reliable than the release notes for this SDK.
+- **API calls return before Resolve has finished.** `OpenPage()` and `SetCurrentTimecode()` return
+  immediately, but the Color page needs ~1.5 s to load and a seek needs ~120 ms before a frame is
+  renderable. A tight loop captured **0/10** thumbnails; adding deliberate waits made it **10/10**.
+  Console testing hides this — round-trip overhead supplies the delay by accident.
+- **`os.tmpdir()` is not `/tmp` on macOS** — it is a per-user path under `/var/folders/…/T/`.
 
 ## Contributing
 

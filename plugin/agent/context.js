@@ -112,26 +112,46 @@ function build(snap, { focusFrame = null, windowFrames = null } = {}) {
         : 1
   );
 
+  const labels = snap.contentLabels || {};
+  const haveLabels = Object.keys(labels).length > 0;
+
   L.push('## CLIPS');
-  L.push('# track | start TC | end TC | frames | name | handle L/R | id');
+  L.push(
+    '# track | start TC | end TC | frames | name | handle L/R | id' +
+      (haveLabels ? ' | content (APPROXIMATE)' : '')
+  );
   for (const c of clips) {
-    L.push(
-      [
-        `${c.trackType[0].toUpperCase()}${c.trackIndex}`,
-        framesToTC(c.start, fps),
-        framesToTC(c.end, fps),
-        `${c.duration}f`,
-        c.name,
-        `${c.leftOffset ?? '?'}/${c.rightOffset ?? '?'}`,
-        (c.id || '').slice(0, 8),
-      ].join(' | ')
-    );
+    const row = [
+      `${c.trackType[0].toUpperCase()}${c.trackIndex}`,
+      framesToTC(c.start, fps),
+      framesToTC(c.end, fps),
+      `${c.duration}f`,
+      c.name,
+      `${c.leftOffset ?? '?'}/${c.rightOffset ?? '?'}`,
+      (c.id || '').slice(0, 8),
+    ];
+    if (haveLabels) row.push(labels[c.id] || '—');
+    L.push(row.join(' | '));
   }
   if (scoped) {
     L.push('');
     L.push(`NOTE: clip list was scoped — showing ${clips.length} of ${snap.clips.length}.`);
   }
   L.push('');
+
+  // ---- how to treat content labels
+  if (haveLabels) {
+    L.push('## ABOUT THE CONTENT COLUMN');
+    L.push(`${Object.keys(labels).length} of ${snap.clips.length} clips have a content label.`);
+    L.push('These come from a vision model looking at ONE sampled frame per clip.');
+    L.push('They are APPROXIMATE and are a different kind of fact from timecodes:');
+    L.push('- Treat them as a searchable index, not as ground truth.');
+    L.push('- Say "labelled as" or "looks like", not "is".');
+    L.push('- A label marked "(low confidence)" should be offered with a caveat.');
+    L.push('- One frame cannot represent a whole clip; content may change within it.');
+    L.push('- Clips marked "—" were not labelled. Never assume they lack that content.');
+    L.push('');
+  }
 
   // ---- what the API cannot see (Doc 1 §A4.4)
   L.push('## NOT VISIBLE TO THE API');

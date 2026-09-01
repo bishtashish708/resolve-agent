@@ -81,10 +81,29 @@
 </head>
 <body>
 
-<h1>Resolve Agent <span class="tag">v0.2 · read-only</span></h1>
-<div class="sub">E4 — ask about your timeline. Nothing here can modify your project.</div>
+<h1>Resolve Agent <span class="tag">v0.3 · content index</span></h1>
+<div class="sub">Ask about your timeline. Labels are written only when you approve them.</div>
 
 <div class="status" id="status">Connecting…</div>
+
+<details class="diag" id="indexPanel" style="border-top:none;border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:10px">
+  <summary>Content index <span id="idxBadge" class="tag">not run</span></summary>
+  <div style="margin-top:8px">
+    <div class="k" style="font-size:11px;color:var(--dim);margin-bottom:8px">
+      Steps the Color page through each clip to grab a frame, labels them with a vision
+      model, then shows you what it would write. <b>Nothing is written until you approve it.</b>
+      Resolve will visibly flip through clips while this runs.
+    </div>
+    <div class="row">
+      <button id="btnIdx10">Trial run (10 clips)</button>
+      <button id="btnIdxAll">Index all clips</button>
+      <button id="btnIdxCancel" disabled>Cancel</button>
+      <button id="btnIdxRevert">Remove agent labels</button>
+    </div>
+    <div id="idxProgress" class="k" style="font-size:11px;margin-top:8px"></div>
+    <div id="idxOut"></div>
+  </div>
+</details>
 
 <div class="chat" id="chat"></div>
 
@@ -282,6 +301,126 @@ $('btnFails').onclick = async () => {
 };
 
 $('btnDev').onclick = () => window.agent.openDevTools();
+
+// ------------------------------------------------------------- E6 indexing
+const idxOut = $('idxOut');
+let idxRunning = false;
+
+window.agent.onIndexProgress((p) => {
+  const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+  if (p.phase === 'capture') {
+    $('idxProgress').textContent = `capturing frames  ${p.done}/${p.total} (${pct}%)  ${p.name || ''}`;
+  } else if (p.phase === 'capture-done') {
+    $('idxProgress').textContent = `captured ${p.captured}/${p.total} in ${(p.ms/1000).toFixed(1)}s — now labelling…`;
+  } else if (p.phase === 'classify') {
+    $('idxProgress').textContent = `labelling  ${p.done}/${p.total} (${pct}%)`;
+  }
+});
+
+function setIdxRunning(on) {
+  idxRunning = on;
+  $('btnIdx10').disabled = on;
+  $('btnIdxAll').disabled = on;
+  $('btnIdxRevert').disabled = on;
+  $('btnIdxCancel').disabled = !on;
+  $('btnAsk').disabled = on;
+}
+
+async function runIndex(limit) {
+  if (idxRunning) return;
+  idxOut.innerHTML = '';
+  setIdxRunning(true);
+  $('idxProgress').textContent = 'starting…';
+
+  const r = await window.agent.indexRun({ limit });
+  setIdxRunning(false);
+
+  if (!r.ok) {
+    $('idxProgress').innerHTML = `<span class="bad">failed in ${esc(r.phase || '?')}: ${esc(r.error)}</span>`;
+    return;
+  }
+
+  const cap = r.capture || {};
+  const vis = r.vision || {};
+  const plan = r.plan || {};
+  $('idxProgress').innerHTML =
+    `<span class="ok">done</span> — captured ${cap.captured}/${cap.total} ` +
+    `(${(cap.ms/1000).toFixed(1)}s, ${cap.msPerClip}ms/clip) · labelled ${vis.labelled || 0}` +
+    (r.cancelled ? ' · <span class="warn">CANCELLED</span>' : '');
+
+  const rows = (plan.plan || []).slice(0, 60).map(p =>
+    `<div style="margin-bottom:3px"><span class="v">${esc(p.name)}</span>
+     <span class="k">${esc(p.startTC)}</span> — ${esc(p.comment)}
+     ${p.color ? `<span class="tag">${esc(p.color)}</span>` : ''}</div>`).join('');
+
+  const problems = (vis.problems || []).length
+    ? `<div class="warn" style="margin-top:6px">${vis.problems.length} labelling problem(s):</div>
+       <pre style="max-height:170px">${esc((vis.problems || []).slice(0, 5).map(p =>
+         `${p.error}${p.stderr ? '\n  stderr: ' + p.stderr : ''}${p.sample ? '\n  got: ' + p.sample : ''}`
+       ).join('\n\n'))}</pre>` : '';
+  const fails = (cap.failures || []).length
+    ? `<div class="warn" style="margin-top:6px">${cap.failures.length} capture failure(s):</div>
+       <pre style="max-height:130px">${esc((cap.failures || []).slice(0, 12).map(f =>
+         `${f.name || '(all)'} — ${f.reason}${f.attempts ? ` after ${f.attempts} tries` : ''}` +
+         `${f.landedOn ? ` · landed on ${f.landedOn}` : ''}`).join('\n'))}</pre>` : '';
+
+  const mism = (cap.mismatches || 0)
+    ? `<div class="warn" style="margin-top:6px">${cap.mismatches} clip(s) captured but the page reported a different clip name — labels may be attached to the wrong clips</div>` : '';
+
+  idxOut.innerHTML = `
+    <div class="card">
+      <h2>Proposed labels — nothing written yet</h2>
+      <div class="k" style="margin-bottom:8px">
+        would write to <b>${plan.wouldWrite || 0}</b> clips ·
+        skipped ${(plan.skipped || []).length} (already have their own comment) ·
+        page restored to <b>${esc(cap.restoredPage || '?')}</b>
+      </div>
+      <div class="k" style="font-size:10px;margin-bottom:8px">
+        frames: <span class="v">${esc(cap.dir || '?')}</span>
+      </div>
+      ${problems}${fails}${mism}
+      <pre style="max-height:220px">${rows || 'nothing to write'}</pre>
+      <div class="row" style="margin-top:9px">
+        <button id="btnIdxApply">Write these to my project</button>
+        <button id="btnIdxDiscard">Discard</button>
+      </div>
+      <div class="k" style="margin-top:6px;font-size:10px">
+        Writes only the Comments field and clip colour. No timeline changes.
+        Reversible with "Remove agent labels".
+      </div>
+    </div>`;
+
+  const applyBtn = document.getElementById('btnIdxApply');
+  if (applyBtn) applyBtn.onclick = async () => {
+    applyBtn.disabled = true;
+    const a = await window.agent.indexApply({ writeColor: true, preserveExisting: true });
+    idxOut.innerHTML = a.ok
+      ? `<div class="card"><h2>Written</h2>${kv([
+          ['clips written', a.written],
+          ['skipped', (a.skipped || []).length],
+          ['failed', (a.failed || []).length, (a.failed || []).length ? 'bad' : ''],
+        ])}</div>`
+      : `<div class="card"><h2>Write failed</h2><div class="bad">${esc(a.error)}</div></div>`;
+    $('idxBadge').textContent = a.ok ? `${a.written} labelled` : 'write failed';
+  };
+  const discardBtn = document.getElementById('btnIdxDiscard');
+  if (discardBtn) discardBtn.onclick = () => { idxOut.innerHTML = ''; $('idxProgress').textContent = 'discarded'; };
+}
+
+$('btnIdx10').onclick = () => runIndex(10);
+$('btnIdxAll').onclick = () => runIndex(null);
+$('btnIdxCancel').onclick = async () => {
+  await window.agent.indexCancel();
+  $('idxProgress').textContent += '  — cancelling…';
+};
+$('btnIdxRevert').onclick = async () => {
+  const r = await window.agent.indexRevert();
+  $('idxProgress').innerHTML = r.ok
+    ? `<span class="ok">removed ${r.cleared} agent labels, cleared ${r.colours} colours</span>`
+    : `<span class="bad">${esc(r.error)}</span>`;
+  $('idxBadge').textContent = 'not run';
+  idxOut.innerHTML = '';
+};
 
 // --------------------------------------------------------------- startup
 (async () => {

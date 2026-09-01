@@ -144,6 +144,18 @@ function take({ includeMarkers = true } = {}) {
     snap.timings.markersMs = Date.now() - tM;
   }
 
+  // ---- content labels (E6) — derived and APPROXIMATE, unlike everything else
+  // in this snapshot. Kept in a separate field so the agent can hedge on them
+  // while staying precise about timecodes (Doc 1 §A4.4).
+  try {
+    const labels = require('../agent/labels').read();
+    snap.contentLabels = labels;
+    snap.contentLabelCount = Object.keys(labels).length;
+  } catch (e) {
+    snap.contentLabels = {};
+    snap.contentLabelCount = 0;
+  }
+
   // ---- derived (Doc 1 §B1.4 — computed in code, NEVER inferred by the model)
   snap.derived = computeDerived(snap);
 

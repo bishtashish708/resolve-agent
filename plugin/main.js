@@ -15,6 +15,9 @@ const calls = require('./resolve/calls');
 const backend = require('./agent/backend');
 const context = require('./agent/context');
 const prompt = require('./agent/prompt');
+const indexer = require('./agent/indexer');
+const vision = require('./agent/vision');
+const labels = require('./agent/labels');
 
 let win = null;
 
@@ -144,6 +147,95 @@ ipcMain.handle('agent:ask', async (_e, question) => {
     },
   };
 });
+
+// ---------------------------------------------------------------- E6 index
+// Content understanding. The capture pass mutates UI state (page + playhead)
+// and restores it; label writing mutates the PROJECT and is gated behind an
+// explicit dry-run -> review -> apply flow.
+
+let indexState = { running: false, cancel: false, last: null };
+
+const emit = (channel, payload) => {
+  if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+};
+
+ipcMain.handle('index:cancel', async () => {
+  indexState.cancel = true;
+  return { ok: true };
+});
+
+ipcMain.handle('index:run', async (_e, opts = {}) => {
+  if (indexState.running) return { ok: false, error: 'an index pass is already running' };
+  indexState = { running: true, cancel: false, last: null };
+
+  try {
+    const cap = await indexer.capture({
+      limit: opts.limit || null,
+      isCancelled: () => indexState.cancel,
+      onProgress: (p) => emit('index:progress', { phase: 'capture', ...p }),
+    });
+    if (!cap.ok) return { ok: false, phase: 'capture', error: cap.error };
+
+    emit('index:progress', { phase: 'capture-done', ...cap, captured: cap.captured.length });
+
+    if (indexState.cancel || !cap.captured.length) {
+      return { ok: true, cancelled: indexState.cancel, capture: summarise(cap), labels: [] };
+    }
+
+    const vis = await vision.classify({
+      captured: cap.captured,
+      dir: cap.dir,
+      isCancelled: () => indexState.cancel,
+      onProgress: (p) => emit('index:progress', { phase: 'classify', ...p }),
+    });
+    if (!vis.ok) return { ok: false, phase: 'classify', error: vis.error, capture: summarise(cap) };
+
+    // ALWAYS dry-run first. Nothing is written until the user says so.
+    const plan = labels.apply(vis.labels, { dryRun: true });
+
+    indexState.last = { labels: vis.labels, capture: summarise(cap), vision: vis };
+    return {
+      ok: true,
+      cancelled: indexState.cancel,
+      capture: summarise(cap),
+      vision: { labelled: vis.labelled, expected: vis.expected, ms: vis.ms, problems: vis.problems },
+      plan,
+    };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  } finally {
+    indexState.running = false;
+  }
+});
+
+ipcMain.handle('index:apply', async (_e, opts = {}) => {
+  if (!indexState.last || !indexState.last.labels) {
+    return { ok: false, error: 'no labels pending — run an index pass first' };
+  }
+  return labels.apply(indexState.last.labels, {
+    dryRun: false,
+    writeColor: opts.writeColor !== false,
+    preserveExisting: opts.preserveExisting !== false,
+  });
+});
+
+ipcMain.handle('index:revert', async () => labels.revert({ clearColor: true }));
+
+ipcMain.handle('index:clean', async () => indexer.clean());
+
+function summarise(cap) {
+  return {
+    total: cap.total,
+    captured: cap.captured.length,
+    failures: cap.failures,
+    mismatches: cap.captured.filter((c) => c.nameMatches === false).length,
+    ms: cap.ms,
+    msPerClip: cap.msPerClip,
+    dir: cap.dir,
+    restoredPage: cap.restoredPage,
+    restoredTimecode: cap.restoredTimecode,
+  };
+}
 
 ipcMain.handle('diag:openDevTools', async () => {
   if (win) win.webContents.openDevTools({ mode: 'detach' });
