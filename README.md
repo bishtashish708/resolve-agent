@@ -136,8 +136,14 @@ Measured on Resolve Studio 21.0.3.7, macOS. Details in [`docs/findings/`](docs/f
 
 - **A Resolve API call takes ~0.16 ms, not the widely-repeated ~15 ms.** A full 362-clip snapshot
   is ~700 ms. Elaborate polling tiers are unnecessary — just re-read.
-- **Resolve's Edit ▸ Undo *does* reverse scripted appends.** Verified for `AppendToTimeline` only;
-  other operations untested.
+- **Resolve's Edit ▸ Undo reverses almost everything scripted** — including `DeleteClips` and
+  `SetCDL` (actual grade values). The exception found so far is `AddVersion`, which survives undo
+  but *can* be reversed via `LoadVersionByName` + `DeleteVersionByName`.
+- **Batches are per-item on the undo stack.** One `AppendToTimeline` call with 3 clipInfos creates
+  **3** undo entries, so a 40-clip operation needs 40 presses. Bulk work is technically reversible
+  and practically not — tell users the step count, not "you can undo this".
+- **Grade *values* are undoable; grade *structure* is not.** Same page, different behaviour. Don't
+  extrapolate across subsystems.
 - **`AppendToTimeline` targets the CURRENT timeline**, not the Timeline object you hold — and
   `DuplicateTimeline` silently changes which timeline is current. This combination produces
   convincing false "append failed" readings.

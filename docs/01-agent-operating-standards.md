@@ -52,20 +52,53 @@ this into "I've prepared that for you" or "that's ready to apply."
 agent is not certain of the exact menu path or keyboard shortcut in the user's version, it
 describes the action and location in prose rather than fabricating a precise path.
 
-**Rule A1.3 — Resolve's own Edit ▸ Undo *does* reverse scripted appends. Say so, precisely, and
-don't over-generalise.** `[OURS]` Verified 31 Aug 2026: a scripted `AppendToTimeline` landed on
-Resolve's native undo stack and was reversed by one Cmd+Z (findings F6).
+**Rule A1.3 — Resolve's Edit ▸ Undo reverses scripted mutations, but COUNT THE PRESSES.**
+`[OURS]` Q9 answered 1 Sep 2026. Every operation tested lands on Resolve's native undo stack:
 
-What the agent may say: *"Cmd+Z should undo that."* — for an **append**.
+| Operation | Undoable | Granularity |
+|---|---|---|
+| `DeleteClips` | yes | per call |
+| `AppendToTimeline` | yes | **per clip** — 3 clipInfos = 3 undo steps |
+| `SetMetadata("Comments")` | yes | per call |
+| `SetClipColor` | yes | per call |
+| `AddMarker` | yes | per call |
+| `AddTrack` | yes | per call |
+| `SetName` | yes | per call |
+| `AddFlag` | yes | per call |
+| **`SetCDL`** (actual grade values) | **yes** | per call |
+| **`AddVersion`** (grade version) | **NO** | — survives undo entirely |
 
-What the agent must **not** say: that undo will reverse a delete, a grade, a metadata write, or a
-multi-clip batch. **Only append has been tested.** Granularity is also unknown — a 40-clip
-operation may need 40 presses or one. Until Q9 settles which operations are undoable and at what
-granularity, the agent hedges on everything except append, and the destructive set in §A2.3 keeps
-its confirmation gate regardless.
+**`AddVersion` is not undoable, but it IS agent-reversible.** Cmd+Z will not remove a created grade
+version. The API will: `LoadVersionByName("Version 1", 0)` to switch away, then
+`DeleteVersionByName(name, 0)`. `DeleteVersionByName` returns **false** while that version is
+loaded — which is what made it look permanent on first attempt.
 
-The agent still has no undo of its own (row 8). This rule is about what it can honestly tell the
-user, not about a new capability.
+This is the clearest case yet for **Rule B4.3 (reversal notes)**. The user cannot take this back
+with a keystroke, so the agent must record and be able to execute the two-step reversal itself. An
+operation being outside Resolve's undo stack does not make it irreversible — it makes reversal the
+agent's job.
+
+Note the split this reveals: **grade VALUES are on the undo stack, grade STRUCTURE is not.** Do not
+reason about the colour page as one subsystem.
+
+**The granularity is the important half.** A batch does NOT collapse into one undo step. A 40-clip
+operation creates ~40 of them, which is technically reversible and practically not — and a user who
+presses Cmd+Z thirty-eight times lands somewhere worse than either endpoint.
+
+So the agent states the **cost of reversal**, never a bare reassurance:
+
+- Single operation: *"Cmd+Z will undo that."*
+- Batch: *"That's 40 separate undo steps — Cmd+Z won't cleanly take it back. Sure?"*
+
+**Rule A1.3.1 — Any mutation touching more than ~5 items is treated as effectively irreversible**
+regardless of the table above, and gets a confirmation gate stating the step count (§A2.3).
+
+**Rule A1.3.2 — Untested operations stay hedged.** Grades, LUTs, track add/delete, `SetName`,
+flags and Fusion comps have NOT been tested. Do not extend the table above by analogy — metadata
+and timeline structure are different subsystems and happened to agree; others may not.
+
+The agent still has no undo of its own (row 8). This rule governs what it can honestly tell the
+user, not a new capability.
 
 ## A2. The act-vs-instruct decision rule
 
@@ -544,8 +577,9 @@ as final; record findings per Doc 2 §E9.
 
 | # | Question | Affects | Priority |
 |---|---|---|---|
-| ~~Q6~~ | ~~Does Edit ▸ Undo reverse scripted mutations?~~ | — | ✅ **Answered 31 Aug — YES for `AppendToTimeline`.** §A1.3 rewritten. Scope limited: only append tested |
-| **Q9** | **Which operations are undoable, and at what granularity?** Sweep `DeleteClips`, grades, `SetMetadata`, `SetClipColor`, track add/delete, and multi-clip batches | §A1.3, §A2.3, §B4 — the difference between "confirm everything" and "confirm deletes" | **Highest** |
+| ~~Q6~~ | ~~Does Edit ▸ Undo reverse scripted mutations?~~ | — | ✅ **Answered 31 Aug — YES for `AppendToTimeline`** |
+| ~~Q9~~ | ~~Which operations are undoable, and at what granularity?~~ | — | ✅ **Answered 1 Sep.** DeleteClips, AppendToTimeline, SetMetadata, SetClipColor, AddMarker all undoable. **Batches are per-item, not per-call.** §A1.3 rewritten |
+| **Q10** | **Are grades, LUTs, track add/delete, `SetName` and Fusion comps undoable?** Not covered by Q9 — different subsystems | §A1.3.2, and directly gates E5 colour work | **High** |
 | Q1 | Does `DeleteClips` + re-append actually lose the grade, Fusion comps, markers and properties? | §A2.3.2 | High |
 | ~~Q2~~ | ~~Real cost of a full structural snapshot~~ | — | ✅ **Answered 31 Aug** — ~1 s for 362 clips, ~0.3 ms/call. See findings; §B2.1–B2.3 amended |
 | Q3 | Do API calls hang *specifically* because of modal dialogs, or is that inference? Can we detect it? | §A6.8, §B5.5, §B6 | Medium |

@@ -93,7 +93,7 @@ these before writing feature code.** Ordered by how much the answer changes the 
 
 | # | Spike | If it fails |
 |---|---|---|
-| 0.1 | **Does a WIP shell load and reach the Resolve API at all?** Minimal manifest + `main.js` + `GetResolve()` on your 21.0.4 | Whole approach is dead — fall back to the `Workspace ▸ Scripts` + localhost-listener pattern, which also reaches the free edition |
+| 0.1 | **Does a WIP shell load and reach the Resolve API at all?** Minimal manifest + `main.js` + `GetResolve()` on your 21.0.4 | Whole approach is dead — fall back to the `Workspace ▸ Scripts` + localhost pattern (auto-subs, 4.1k★) |
 | 0.2 | **Hot-reload dev loop** — does replacing files in a registered plugin work without restarting Resolve? (Doc 2 §E7.2) | Every code change costs a full Resolve restart; iteration plan changes |
 | 0.3 | **Does Edit ▸ Undo reverse scripted mutations?** (Doc 1 Q6) | If yes, safety UX relaxes materially and the agent can reassure users |
 | 0.4 | **`GetCurrentClipThumbnailImage()` on 200 clips** — format, resolution, wall-clock cost | Kills the cheapest content path; forces E6 down a slower route |
@@ -375,8 +375,8 @@ distinct mode treatment, snapshot freshness indicator, honest degraded states.
 
 ## Settled — 31 Aug 2026
 
-**LLM backend: Claude Code CLI as a long-lived subprocess.** `spawn` from the Electron main
-process, JSON over stdin/stdout, auth via the user's existing `claude` login.
+**LLM backend: Claude Code CLI as a long-lived subprocess.** The `claude-resolve` pattern —
+`spawn` from the Electron main process, stream-json over stdin/stdout, auth via `claude auth`.
 
 *Consequences:* no API key is ever handled, stored or logged, which removes a whole class of
 security surface. Requires a Claude Pro or Max subscription. Requires the CLI installed and
